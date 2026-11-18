@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <cache-path name="exports" path="exports/" />
+    <cache-path name="camera_scans" path="camera_scans/" />
+    <files-path name="reports" path="reports/" />
+    <files-path name="protected_bills" path="protected_bills/" />
+</paths>

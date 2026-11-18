@@ -1,0 +1,307 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private authenticated user profile and CampNidhi app preferences.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string", "description": "User full name" },
+        "email": { "type": "string", "description": "User Google email" },
+        "preferredLanguage": { "type": "string", "enum": ["en", "ta"], "description": "UI language preference" },
+        "themeMode": { "type": "string", "enum": ["SYSTEM", "LIGHT", "DARK"], "description": "Theme preference" },
+        "activeCampId": { "type": "string", "description": "Last selected camp document ID" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["userId", "displayName", "preferredLanguage", "themeMode", "createdAt", "updatedAt"]
+    },
+    "Camp": {
+      "title": "Camp",
+      "description": "Isolated rural camp workspace with budget, dates, governance settings, and report declarations.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "description": "Creator Firebase Auth UID" },
+        "memberUids": { "type": "array", "description": "Authorized Firebase Auth UIDs belonging to this camp" },
+        "name": { "type": "string", "description": "Camp display name" },
+        "institution": { "type": "string", "description": "College or organization name" },
+        "location": { "type": "string", "description": "Village or district location" },
+        "startDateMillis": { "type": "integer", "description": "Camp start epoch millis" },
+        "endDateMillis": { "type": "integer", "description": "Camp end epoch millis" },
+        "participantCount": { "type": "integer", "description": "Number of camp participants" },
+        "coordinatorName": { "type": "string", "description": "Camp coordinator name" },
+        "financeLeaderName": { "type": "string", "description": "Finance committee leader name" },
+        "approvedBudget": { "type": "number", "description": "Total approved camp budget in INR" },
+        "status": { "type": "string", "enum": ["PLANNING", "ACTIVE", "ARCHIVED"] },
+        "approvalLimit": { "type": "number", "description": "Expense threshold requiring higher review" },
+        "requireIndependentApproval": { "type": "boolean", "description": "Prevent self-approval of submitted expenses" },
+        "isDemoData": { "type": "boolean", "description": "Marks clearly labeled demonstration camps" },
+        "incomeCategories": { "type": "array", "description": "Editable income categories" },
+        "expenseCategories": { "type": "array", "description": "Editable expense categories" },
+        "treasurerDeclaration": { "type": "string", "description": "Treasurer final statement declaration" },
+        "auditorRemarks": { "type": "string", "description": "Auditor review remarks" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "memberUids", "name", "startDateMillis", "endDateMillis", "participantCount", "approvedBudget", "status", "approvalLimit", "requireIndependentApproval", "isDemoData", "createdAt", "updatedAt"]
+    },
+    "CampMember": {
+      "title": "CampMember",
+      "description": "Role-based user assignment within a specific camp.",
+      "type": "object",
+      "properties": {
+        "campId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "memberUid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["SYSTEM_ADMIN", "TREASURER", "COMMITTEE_LEADER", "AUDITOR"] },
+        "assignedCommitteeIds": { "type": "array" },
+        "isActive": { "type": "boolean" },
+        "isDemoData": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campId", "ownerId", "memberUids", "displayName", "role", "isActive", "isDemoData", "createdAt", "updatedAt"]
+    },
+    "Committee": {
+      "title": "Committee",
+      "description": "Configurable camp committee with allocated budget and assigned leader.",
+      "type": "object",
+      "properties": {
+        "campId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "name": { "type": "string" },
+        "leaderName": { "type": "string" },
+        "leaderEmail": { "type": "string" },
+        "allocatedBudget": { "type": "number" },
+        "colorHex": { "type": "string" },
+        "description": { "type": "string" },
+        "isDefault": { "type": "boolean" },
+        "isDemoData": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campId", "ownerId", "memberUids", "name", "allocatedBudget", "isDefault", "isDemoData", "createdAt", "updatedAt"]
+    },
+    "IncomeRecord": {
+      "title": "IncomeRecord",
+      "description": "Camp income, donation, sponsorship, or participant contribution record.",
+      "type": "object",
+      "properties": {
+        "campId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "transactionCode": { "type": "string" },
+        "dateMillis": { "type": "integer" },
+        "category": { "type": "string" },
+        "source": { "type": "string" },
+        "contributorName": { "type": "string" },
+        "contributorGroup": { "type": "string" },
+        "promisedAmount": { "type": "number" },
+        "receivedAmount": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["CASH", "UPI", "BANK_TRANSFER", "OTHER"] },
+        "referenceNumber": { "type": "string" },
+        "notes": { "type": "string" },
+        "evidenceUri": { "type": "string" },
+        "evidenceBase64": { "type": "string" },
+        "paymentStatus": { "type": "string", "enum": ["PAID", "PARTIAL", "PROMISED"] },
+        "recordedByUid": { "type": "string" },
+        "recordedByName": { "type": "string" },
+        "isDemoData": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campId", "ownerId", "memberUids", "transactionCode", "dateMillis", "category", "source", "promisedAmount", "receivedAmount", "paymentMethod", "paymentStatus", "recordedByUid", "recordedByName", "isDemoData", "createdAt", "updatedAt"]
+    },
+    "ExpenseRecord": {
+      "title": "ExpenseRecord",
+      "description": "Camp expense with committee allocation, approval workflow, payment tracking, and receipt evidence.",
+      "type": "object",
+      "properties": {
+        "campId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "expenseCode": { "type": "string" },
+        "dateMillis": { "type": "integer" },
+        "committeeId": { "type": "string" },
+        "committeeName": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "vendorName": { "type": "string" },
+        "amount": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["CASH", "UPI", "BANK_TRANSFER", "OTHER"] },
+        "paymentStatus": { "type": "string", "enum": ["DRAFT", "SUBMITTED", "PENDING_APPROVAL", "APPROVED", "REJECTED", "PARTIALLY_PAID", "PAID"] },
+        "receiptUri": { "type": "string" },
+        "receiptThumbnailBase64": { "type": "string" },
+        "receiptVerified": { "type": "boolean" },
+        "receiptVerifiedBy": { "type": "string" },
+        "submittedByUid": { "type": "string" },
+        "submittedByName": { "type": "string" },
+        "approvedByUid": { "type": "string" },
+        "approvedByName": { "type": "string" },
+        "paidByName": { "type": "string" },
+        "paymentReference": { "type": "string" },
+        "remarks": { "type": "string" },
+        "sourceIncomeCode": { "type": "string" },
+        "isDemoData": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campId", "ownerId", "memberUids", "expenseCode", "dateMillis", "committeeId", "committeeName", "category", "description", "vendorName", "amount", "paidAmount", "paymentMethod", "paymentStatus", "receiptVerified", "submittedByUid", "submittedByName", "isDemoData", "createdAt", "updatedAt"]
+    },
+    "BudgetTransfer": {
+      "title": "BudgetTransfer",
+      "description": "Approval-gated budget reallocation between committees.",
+      "type": "object",
+      "properties": {
+        "campId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "fromCommitteeId": { "type": "string" },
+        "fromCommitteeName": { "type": "string" },
+        "toCommitteeId": { "type": "string" },
+        "toCommitteeName": { "type": "string" },
+        "amount": { "type": "number" },
+        "reason": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] },
+        "requestedByUid": { "type": "string" },
+        "requestedByName": { "type": "string" },
+        "approvedByUid": { "type": "string" },
+        "approvedByName": { "type": "string" },
+        "isDemoData": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campId", "ownerId", "memberUids", "fromCommitteeId", "fromCommitteeName", "toCommitteeId", "toCommitteeName", "amount", "reason", "status", "requestedByUid", "requestedByName", "isDemoData", "createdAt", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable financial accountability trail recording every creation, modification, approval, and payment.",
+      "type": "object",
+      "properties": {
+        "campId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "entityType": { "type": "string", "enum": ["CAMP", "COMMITTEE", "INCOME", "EXPENSE", "TRANSFER", "MEMBER", "APPROVAL", "BILL", "SECURITY"] },
+        "entityId": { "type": "string" },
+        "entityCode": { "type": "string" },
+        "action": { "type": "string" },
+        "summary": { "type": "string" },
+        "previousValues": { "type": "string" },
+        "newValues": { "type": "string" },
+        "actorUid": { "type": "string" },
+        "actorName": { "type": "string" },
+        "actorRole": { "type": "string" },
+        "isDemoData": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campId", "ownerId", "memberUids", "entityType", "entityId", "action", "summary", "actorUid", "actorName", "actorRole", "isDemoData", "createdAt"]
+    },
+    "GenericSecurityDoc": {
+      "title": "GenericSecurityDoc",
+      "description": "Strict server-governed entity for admin_settings, role_permissions, temporary_access_grants, login_events, notifications, access_requests, information_shares, faculty_profiles, casework_finance, bill_originals, bill_extractions, bill_versions, expense_records, financial_audit_logs, and presentation_sessions.",
+      "type": "object",
+      "properties": {
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user preferences and active camp selection."
+    },
+    "/admin_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Primary Admin security governance settings."
+    },
+    "/role_permissions/{roleId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Configurable role permission matrix."
+    },
+    "/temporary_access_grants/{grantId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Time-bounded Co-Admin temporary role assignments and revocation history."
+    },
+    "/login_events/{eventId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Immutable login and access attempt log."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Persistent Primary Admin security and bill verification alerts."
+    },
+    "/access_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Invited viewer and restricted access requests awaiting Primary Admin review."
+    },
+    "/information_shares/{shareId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Strictly scoped, expirable, revocable viewer data projections."
+    },
+    "/faculty_profiles/{profileId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Three Faculty-In-Charge access profiles (FACULTY ACCESS 01-03)."
+    },
+    "/casework_finance/{caseworkId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Anonymised Social Work casework/programme financial summaries."
+    },
+    "/presentation_sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Faculty presentation session activity logs."
+    },
+    "/bill_originals/{billId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Permanent, immutable original scanned bill images/PDF records with SHA-256 hash."
+    },
+    "/bill_extractions/{billId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "AI OCR extracted bill fields, anomaly flags, and verification metadata."
+    },
+    "/bill_versions/{versionId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Append-only version history for original bills, admin corrections, and vendor replacements."
+    },
+    "/expense_records/{expenseId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Top-level synchronized expense index for bill verification linkage."
+    },
+    "/financial_audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/GenericSecurityDoc" },
+      "description": "Global immutable audit trail across bills, corrections, and admin governance."
+    },
+    "/camps/{campId}": {
+      "schema": { "$ref": "#/entities/Camp" },
+      "description": "Rural camp master workspaces isolated per camp."
+    },
+    "/camps/{campId}/members/{memberId}": {
+      "schema": { "$ref": "#/entities/CampMember" },
+      "description": "Camp-scoped user roles and committee assignments."
+    },
+    "/camps/{campId}/committees/{committeeId}": {
+      "schema": { "$ref": "#/entities/Committee" },
+      "description": "Configurable camp committees and budget allocations."
+    },
+    "/camps/{campId}/incomes/{incomeId}": {
+      "schema": { "$ref": "#/entities/IncomeRecord" },
+      "description": "Camp income and contribution ledger."
+    },
+    "/camps/{campId}/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/ExpenseRecord" },
+      "description": "Camp expenses with approval status and receipt evidence."
+    },
+    "/camps/{campId}/budget_transfers/{transferId}": {
+      "schema": { "$ref": "#/entities/BudgetTransfer" },
+      "description": "Inter-committee budget transfer requests and approvals."
+    },
+    "/camps/{campId}/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Append-only immutable audit history."
+    }
+  }
+}

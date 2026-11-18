@@ -1,0 +1,749 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL HELPERS ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function authEmail() {
+      return isSignedIn() && ('email' in request.auth.token) && request.auth.token.email is string
+        ? request.auth.token.email.lower()
+        : '';
+    }
+
+    function isPrimaryAdmin() {
+      return isSignedIn() && authEmail() == '2501721049055@mcc.edu.in';
+    }
+
+    function isCoAdmin() {
+      return isSignedIn() && authEmail() == '2501721049029@mcc.edu.in';
+    }
+
+    function hasAnyActiveCoAdminGrant() {
+      let grantPath = /databases/$(database)/documents/temporary_access_grants/coadmin_active_grant;
+      return isCoAdmin() &&
+             exists(grantPath) &&
+             get(grantPath).data.status == 'APPROVED' &&
+             get(grantPath).data.revoked == false &&
+             request.time.toMillis() >= get(grantPath).data.startsAtMillis &&
+             request.time.toMillis() < get(grantPath).data.expiresAtMillis;
+    }
+
+    function hasActiveCoAdminGrant(moduleName, needEdit, needApprove) {
+      let grantPath = /databases/$(database)/documents/temporary_access_grants/coadmin_active_grant;
+      return hasAnyActiveCoAdminGrant() &&
+             (moduleName in get(grantPath).data.allowedModules) &&
+             (!needEdit || get(grantPath).data.canEdit == true) &&
+             (!needApprove || get(grantPath).data.canApprove == true);
+    }
+
+    function coAdminWithinLimit(amount) {
+      let grantPath = /databases/$(database)/documents/temporary_access_grants/coadmin_active_grant;
+      return get(grantPath).data.financialLimit <= 0 ||
+             amount <= get(grantPath).data.financialLimit;
+    }
+
+    function isFacultyAuthorizedForCasework(caseworkId, profileId) {
+      let pPath = /databases/$(database)/documents/faculty_profiles/$(profileId);
+      return isSignedIn() &&
+             profileId in ['faculty_01', 'faculty_02', 'faculty_03'] &&
+             exists(pPath) &&
+             get(pPath).data.assignedEmail == authEmail() &&
+             get(pPath).data.isEnabled == true &&
+             get(pPath).data.status == 'APPROVED' &&
+             (get(pPath).data.expiresAtMillis <= 0 || request.time.toMillis() < get(pPath).data.expiresAtMillis) &&
+             get(pPath).data.approvedCaseworkId == caseworkId;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isStringBounded(data, key, maxLen) {
+      return !((key in data)) || data[key] == null || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isStringListBounded(listVal, maxItems) {
+      return listVal is list && listVal.size() <= maxItems && (listVal.size() == 0 || listVal[0] is string);
+    }
+
+    function campExists(campId) {
+      return exists(/databases/$(database)/documents/camps/$(campId)) ||
+             existsAfter(/databases/$(database)/documents/camps/$(campId));
+    }
+
+    function campOwnerId(campId) {
+      return exists(/databases/$(database)/documents/camps/$(campId))
+        ? get(/databases/$(database)/documents/camps/$(campId)).data.ownerId
+        : getAfter(/databases/$(database)/documents/camps/$(campId)).data.ownerId;
+    }
+
+    function campRequiresIndependentApproval(campId) {
+      return exists(/databases/$(database)/documents/camps/$(campId)) &&
+             get(/databases/$(database)/documents/camps/$(campId)).data.requireIndependentApproval == true;
+    }
+
+    function isCampOwner(campId) {
+      return isSignedIn() && campOwnerId(campId) == request.auth.uid;
+    }
+
+    function memberRoleForCamp(campId) {
+      let path = /databases/$(database)/documents/camps/$(campId)/members/$(request.auth.uid);
+      return exists(path) && get(path).data.isActive == true
+        ? get(path).data.role
+        : '';
+    }
+
+    function isCampRole(campId, allowedRoles) {
+      return isSignedIn() && memberRoleForCamp(campId) in allowedRoles;
+    }
+
+    function canUpdateExpense(campId) {
+      let role = memberRoleForCamp(campId);
+      let isOwnerOrAdmin = isPrimaryAdmin() || existing().ownerId == request.auth.uid || role == 'SYSTEM_ADMIN';
+      let isCoAdminExpenseAllowed = (hasActiveCoAdminGrant('EXPENSES', true, false) || hasActiveCoAdminGrant('APPROVALS', false, true)) &&
+        (!(incoming().paymentStatus in ['APPROVED', 'PARTIALLY_PAID', 'PAID', 'REJECTED']) ||
+         (hasActiveCoAdminGrant('APPROVALS', false, true) && coAdminWithinLimit(incoming().amount)));
+      let changed = incoming().diff(existing()).affectedKeys();
+      return ((isOwnerOrAdmin || isCoAdminExpenseAllowed) && changed.hasOnly(['memberUids', 'dateMillis', 'committeeId', 'committeeName', 'category', 'description', 'vendorName', 'amount', 'paidAmount', 'paymentMethod', 'paymentStatus', 'receiptUri', 'receiptThumbnailBase64', 'receiptVerified', 'receiptVerifiedBy', 'approvedByUid', 'approvedByName', 'paidByName', 'paymentReference', 'remarks', 'sourceIncomeCode', 'updatedAt'])) ||
+             (role == 'TREASURER' &&
+              !(campRequiresIndependentApproval(campId) &&
+                existing().submittedByUid == request.auth.uid &&
+                incoming().paymentStatus in ['APPROVED', 'PARTIALLY_PAID', 'PAID'] &&
+                !(existing().paymentStatus in ['APPROVED', 'PARTIALLY_PAID', 'PAID'])) &&
+              changed.hasOnly(['dateMillis', 'committeeId', 'committeeName', 'category', 'description', 'vendorName', 'amount', 'paidAmount', 'paymentMethod', 'paymentStatus', 'receiptUri', 'receiptThumbnailBase64', 'receiptVerified', 'receiptVerifiedBy', 'approvedByUid', 'approvedByName', 'paidByName', 'paymentReference', 'remarks', 'sourceIncomeCode', 'updatedAt'])) ||
+             (role == 'COMMITTEE_LEADER' &&
+              existing().submittedByUid == request.auth.uid &&
+              existing().paymentStatus in ['DRAFT', 'SUBMITTED', 'PENDING_APPROVAL', 'REJECTED'] &&
+              incoming().paymentStatus in ['DRAFT', 'SUBMITTED', 'PENDING_APPROVAL'] &&
+              changed.hasOnly(['dateMillis', 'committeeId', 'committeeName', 'category', 'description', 'vendorName', 'amount', 'paymentMethod', 'paymentStatus', 'receiptUri', 'receiptThumbnailBase64', 'remarks', 'updatedAt'])) ||
+             (role == 'AUDITOR' &&
+              changed.hasOnly(['receiptVerified', 'receiptVerifiedBy', 'remarks', 'updatedAt']));
+    }
+
+    // --- VALIDATION BLUEPRINTS ---
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+             isStringBounded(data, 'email', 150) &&
+             data.preferredLanguage in ['en', 'ta'] &&
+             data.themeMode in ['SYSTEM', 'LIGHT', 'DARK'] &&
+             isStringBounded(data, 'activeCampId', 128);
+    }
+
+    function isValidCamp(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             isStringListBounded(data.memberUids, 50) &&
+             data.memberUids.size() >= 1 &&
+             data.ownerId in data.memberUids &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             isStringBounded(data, 'institution', 150) &&
+             isStringBounded(data, 'location', 150) &&
+             data.startDateMillis is int &&
+             data.endDateMillis is int &&
+             data.participantCount is int && data.participantCount >= 0 && data.participantCount <= 100000 &&
+             isStringBounded(data, 'coordinatorName', 100) &&
+             isStringBounded(data, 'financeLeaderName', 100) &&
+             data.approvedBudget is number && data.approvedBudget >= 0 &&
+             data.status in ['PLANNING', 'ACTIVE', 'ARCHIVED'] &&
+             data.approvalLimit is number && data.approvalLimit >= 0 &&
+             data.requireIndependentApproval is bool &&
+             data.isDemoData is bool &&
+             (!('incomeCategories' in data) || isStringListBounded(data.incomeCategories, 30)) &&
+             (!('expenseCategories' in data) || isStringListBounded(data.expenseCategories, 30)) &&
+             isStringBounded(data, 'treasurerDeclaration', 1000) &&
+             isStringBounded(data, 'auditorRemarks', 1000);
+    }
+
+    function isValidMember(data) {
+      return data.campId is string && data.campId.size() >= 1 && data.campId.size() <= 128 &&
+             data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             isStringListBounded(data.memberUids, 50) &&
+             data.memberUids.size() >= 1 &&
+             isStringBounded(data, 'memberUid', 128) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+             isStringBounded(data, 'email', 150) &&
+             data.role in ['SYSTEM_ADMIN', 'TREASURER', 'COMMITTEE_LEADER', 'AUDITOR'] &&
+             (!('assignedCommitteeIds' in data) || isStringListBounded(data.assignedCommitteeIds, 25)) &&
+             data.isActive is bool &&
+             data.isDemoData is bool;
+    }
+
+    function isValidCommittee(data) {
+      return data.campId is string && data.campId.size() >= 1 && data.campId.size() <= 128 &&
+             data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             isStringListBounded(data.memberUids, 50) &&
+             data.memberUids.size() >= 1 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             isStringBounded(data, 'leaderName', 100) &&
+             isStringBounded(data, 'leaderEmail', 150) &&
+             data.allocatedBudget is number && data.allocatedBudget >= 0 &&
+             isStringBounded(data, 'colorHex', 16) &&
+             isStringBounded(data, 'description', 300) &&
+             data.isDefault is bool &&
+             data.isDemoData is bool;
+    }
+
+    function isValidIncome(data) {
+      return data.campId is string && data.campId.size() >= 1 && data.campId.size() <= 128 &&
+             data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             isStringListBounded(data.memberUids, 50) &&
+             data.memberUids.size() >= 1 &&
+             data.transactionCode is string && data.transactionCode.size() >= 1 && data.transactionCode.size() <= 40 &&
+             data.dateMillis is int &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 80 &&
+             data.source is string && data.source.size() >= 1 && data.source.size() <= 120 &&
+             isStringBounded(data, 'contributorName', 100) &&
+             isStringBounded(data, 'contributorGroup', 100) &&
+             data.promisedAmount is number && data.promisedAmount >= 0 &&
+             data.receivedAmount is number && data.receivedAmount >= 0 &&
+             data.paymentMethod in ['CASH', 'UPI', 'BANK_TRANSFER', 'OTHER'] &&
+             isStringBounded(data, 'referenceNumber', 80) &&
+             isStringBounded(data, 'notes', 500) &&
+             isStringBounded(data, 'evidenceUri', 500) &&
+             isStringBounded(data, 'evidenceBase64', 220000) &&
+             data.paymentStatus in ['PAID', 'PARTIAL', 'PROMISED'] &&
+             data.recordedByUid is string && data.recordedByUid.size() >= 1 && data.recordedByUid.size() <= 128 &&
+             data.recordedByName is string && data.recordedByName.size() >= 1 && data.recordedByName.size() <= 100 &&
+             data.isDemoData is bool;
+    }
+
+    function isValidExpense(data) {
+      return data.campId is string && data.campId.size() >= 1 && data.campId.size() <= 128 &&
+             data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             isStringListBounded(data.memberUids, 50) &&
+             data.memberUids.size() >= 1 &&
+             data.expenseCode is string && data.expenseCode.size() >= 1 && data.expenseCode.size() <= 40 &&
+             data.dateMillis is int &&
+             data.committeeId is string && data.committeeId.size() >= 1 && data.committeeId.size() <= 128 &&
+             data.committeeName is string && data.committeeName.size() >= 1 && data.committeeName.size() <= 100 &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 80 &&
+             data.description is string && data.description.size() >= 1 && data.description.size() <= 300 &&
+             data.vendorName is string && data.vendorName.size() >= 1 && data.vendorName.size() <= 120 &&
+             data.amount is number && data.amount >= 0 &&
+             data.paidAmount is number && data.paidAmount >= 0 &&
+             data.paymentMethod in ['CASH', 'UPI', 'BANK_TRANSFER', 'OTHER'] &&
+             data.paymentStatus in ['DRAFT', 'SUBMITTED', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'PARTIALLY_PAID', 'PAID'] &&
+             isStringBounded(data, 'receiptUri', 500) &&
+             isStringBounded(data, 'receiptThumbnailBase64', 220000) &&
+             data.receiptVerified is bool &&
+             isStringBounded(data, 'receiptVerifiedBy', 100) &&
+             data.submittedByUid is string && data.submittedByUid.size() >= 1 && data.submittedByUid.size() <= 128 &&
+             data.submittedByName is string && data.submittedByName.size() >= 1 && data.submittedByName.size() <= 100 &&
+             isStringBounded(data, 'approvedByUid', 128) &&
+             isStringBounded(data, 'approvedByName', 100) &&
+             isStringBounded(data, 'paidByName', 100) &&
+             isStringBounded(data, 'paymentReference', 80) &&
+             isStringBounded(data, 'remarks', 500) &&
+             isStringBounded(data, 'sourceIncomeCode', 80) &&
+             data.isDemoData is bool;
+    }
+
+    function isValidBudgetTransfer(data) {
+      return data.campId is string && data.campId.size() >= 1 && data.campId.size() <= 128 &&
+             data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             isStringListBounded(data.memberUids, 50) &&
+             data.memberUids.size() >= 1 &&
+             data.fromCommitteeId is string && data.fromCommitteeId.size() >= 1 && data.fromCommitteeId.size() <= 128 &&
+             data.fromCommitteeName is string && data.fromCommitteeName.size() >= 1 && data.fromCommitteeName.size() <= 100 &&
+             data.toCommitteeId is string && data.toCommitteeId.size() >= 1 && data.toCommitteeId.size() <= 128 &&
+             data.toCommitteeName is string && data.toCommitteeName.size() >= 1 && data.toCommitteeName.size() <= 100 &&
+             data.amount is number && data.amount > 0 &&
+             data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 300 &&
+             data.status in ['PENDING', 'APPROVED', 'REJECTED'] &&
+             data.requestedByUid is string && data.requestedByUid.size() >= 1 && data.requestedByUid.size() <= 128 &&
+             data.requestedByName is string && data.requestedByName.size() >= 1 && data.requestedByName.size() <= 100 &&
+             isStringBounded(data, 'approvedByUid', 128) &&
+             isStringBounded(data, 'approvedByName', 100) &&
+             data.isDemoData is bool;
+    }
+
+    function isValidAuditLog(data) {
+      return data.campId is string && data.campId.size() >= 1 && data.campId.size() <= 128 &&
+             data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             isStringListBounded(data.memberUids, 50) &&
+             data.memberUids.size() >= 1 &&
+             data.entityType in ['CAMP', 'COMMITTEE', 'INCOME', 'EXPENSE', 'TRANSFER', 'MEMBER', 'APPROVAL', 'BILL', 'SECURITY'] &&
+             data.entityId is string && data.entityId.size() >= 1 && data.entityId.size() <= 128 &&
+             isStringBounded(data, 'entityCode', 40) &&
+             data.action is string && data.action.size() >= 1 && data.action.size() <= 60 &&
+             data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 500 &&
+             isStringBounded(data, 'previousValues', 1000) &&
+             isStringBounded(data, 'newValues', 1000) &&
+             data.actorUid is string && data.actorUid.size() >= 1 && data.actorUid.size() <= 128 &&
+             data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 100 &&
+             data.actorRole is string && data.actorRole.size() >= 1 && data.actorRole.size() <= 40 &&
+             data.isDemoData is bool;
+    }
+
+    // --- 1. USER PROFILE ---
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isPrimaryAdmin());
+      allow list: if isPrimaryAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'preferredLanguage', 'themeMode', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'email', 'preferredLanguage', 'themeMode', 'activeCampId', 'createdAt', 'updatedAt']) &&
+                       isValidTimestamp(incoming().createdAt) &&
+                       isValidTimestamp(incoming().updatedAt) &&
+                       isValidUserProfile(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidTimestamp(incoming().updatedAt) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'preferredLanguage', 'themeMode', 'activeCampId', 'updatedAt']);
+
+      allow delete: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isPrimaryAdmin());
+    }
+
+    // --- 2. GOVERNANCE & SECURITY COLLECTIONS (MODULES 2-6) ---
+    match /admin_settings/{settingId} {
+      allow read, write: if isPrimaryAdmin() && isValidId(settingId);
+    }
+
+    match /role_permissions/{roleId} {
+      allow get, list: if isPrimaryAdmin() || isCoAdmin();
+      allow create, update, delete: if isPrimaryAdmin() && isValidId(roleId);
+    }
+
+    match /temporary_access_grants/{grantId} {
+      allow get: if isPrimaryAdmin() ||
+                    (isCoAdmin() && (resource == null || existing().targetEmail == '2501721049029@mcc.edu.in' || existing().targetUid == request.auth.uid));
+      allow list: if isPrimaryAdmin() ||
+                     (isCoAdmin() && (existing().targetEmail == '2501721049029@mcc.edu.in' || existing().targetUid == request.auth.uid));
+      allow create, update, delete: if isPrimaryAdmin() && isValidId(grantId);
+    }
+
+    match /login_events/{eventId} {
+      allow get: if isPrimaryAdmin() || (isSignedIn() && existing().userUid == request.auth.uid);
+      allow list: if isPrimaryAdmin();
+      allow create: if isSignedIn() &&
+                       isValidId(eventId) &&
+                       incoming().userUid == request.auth.uid &&
+                       isValidTimestamp(incoming().createdAt);
+      allow update, delete: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow get, list: if isPrimaryAdmin();
+      allow create: if isSignedIn() &&
+                       isValidId(notificationId) &&
+                       incoming().actorUid == request.auth.uid &&
+                       isValidTimestamp(incoming().createdAt);
+      allow update, delete: if isPrimaryAdmin();
+    }
+
+    match /access_requests/{requestId} {
+      allow get: if isPrimaryAdmin() || (isSignedIn() && (existing().requesterUid == request.auth.uid || existing().requesterEmail == authEmail()));
+      allow list: if isPrimaryAdmin() || (isSignedIn() && resource.data.requesterUid == request.auth.uid);
+      allow create: if isSignedIn() &&
+                       isValidId(requestId) &&
+                       incoming().requesterUid == request.auth.uid &&
+                       incoming().requesterEmail == authEmail() &&
+                       incoming().status == 'AWAITING_APPROVAL' &&
+                       isValidTimestamp(incoming().createdAt) &&
+                       isValidTimestamp(incoming().updatedAt);
+      allow update, delete: if isPrimaryAdmin();
+    }
+
+    match /information_shares/{shareId} {
+      allow get: if isPrimaryAdmin() ||
+                    (isSignedIn() && (resource == null || (
+                     (existing().recipientEmail == authEmail() || existing().recipientUid == request.auth.uid) &&
+                     existing().status == 'APPROVED' &&
+                     existing().revoked == false &&
+                     request.time.toMillis() < existing().expiresAtMillis)));
+      allow list: if isPrimaryAdmin();
+      allow create, delete: if isPrimaryAdmin() && isValidId(shareId);
+      allow update: if isPrimaryAdmin() ||
+                       (isSignedIn() &&
+                        (existing().recipientEmail == authEmail() || existing().recipientUid == request.auth.uid) &&
+                        existing().status == 'APPROVED' &&
+                        existing().revoked == false &&
+                        request.time.toMillis() < existing().expiresAtMillis &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['lastLoginAtMillis', 'loginCount', 'recipientUid', 'updatedAt']));
+    }
+
+    match /faculty_profiles/{profileId} {
+      allow get: if isPrimaryAdmin() ||
+                    (isSignedIn() && (resource == null || (
+                     existing().assignedEmail == authEmail() &&
+                     existing().isEnabled == true &&
+                     existing().status == 'APPROVED' &&
+                     (existing().expiresAtMillis <= 0 || request.time.toMillis() < existing().expiresAtMillis))));
+      allow list: if isPrimaryAdmin();
+      allow create, update, delete: if isPrimaryAdmin() && isValidId(profileId);
+    }
+
+    match /casework_finance/{caseworkId} {
+      allow get: if isPrimaryAdmin() ||
+                    (isSignedIn() && request.auth.uid in existing().memberUids) ||
+                    isFacultyAuthorizedForCasework(existing().caseworkId, existing().facultyProfileId);
+      allow list: if isPrimaryAdmin() ||
+                     (isSignedIn() && request.auth.uid in resource.data.memberUids);
+      allow create: if isValidId(caseworkId) && (isPrimaryAdmin() || (isSignedIn() && incoming().ownerId == request.auth.uid));
+      allow update, delete: if isPrimaryAdmin() || (isSignedIn() && existing().ownerId == request.auth.uid);
+    }
+
+    match /presentation_sessions/{sessionId} {
+      allow get, list: if isPrimaryAdmin() || (isSignedIn() && resource.data.facultyEmail == authEmail());
+      allow create: if isValidId(sessionId) && (isPrimaryAdmin() || (isSignedIn() && incoming().facultyEmail == authEmail()));
+      allow update, delete: if isPrimaryAdmin();
+    }
+
+    // --- 3. SMART BILL SCANNER COLLECTIONS (IMMUTABLE ORIGINALS) ---
+    match /bill_originals/{billId} {
+      allow get, list: if isPrimaryAdmin() ||
+                         hasActiveCoAdminGrant('BILL_VERIFICATION', false, false) ||
+                         (isSignedIn() && request.auth.uid in resource.data.memberUids);
+      allow create: if isSignedIn() &&
+                       isValidId(billId) &&
+                       incoming().immutable == true &&
+                       isValidTimestamp(incoming().createdAt) &&
+                       (isPrimaryAdmin() || (incoming().uploaderUid == request.auth.uid && request.auth.uid in incoming().memberUids));
+      // Original scanned bills are strictly immutable.
+      allow update: if false;
+      allow delete: if isPrimaryAdmin() && existing().isDemoData == true;
+    }
+
+    match /bill_extractions/{billId} {
+      allow get, list: if isPrimaryAdmin() ||
+                         hasActiveCoAdminGrant('BILL_VERIFICATION', false, false) ||
+                         (isSignedIn() && request.auth.uid in resource.data.memberUids);
+      allow create: if isSignedIn() &&
+                       isValidId(billId) &&
+                       isValidTimestamp(incoming().createdAt) &&
+                       isValidTimestamp(incoming().updatedAt) &&
+                       incoming().verificationStatus in ['DRAFT', 'SUBMITTED'] &&
+                       (isPrimaryAdmin() || (incoming().submittedByUid == request.auth.uid && request.auth.uid in incoming().memberUids));
+      allow update: if isSignedIn() &&
+                       isValidId(billId) &&
+                       incoming().billOriginalId == existing().billOriginalId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidTimestamp(incoming().updatedAt) && (
+                         isPrimaryAdmin() ||
+                         (existing().verificationStatus in ['DRAFT', 'SUBMITTED'] &&
+                          incoming().verificationStatus in ['DRAFT', 'SUBMITTED'] &&
+                          (hasActiveCoAdminGrant('BILL_VERIFICATION', true, false) || existing().submittedByUid == request.auth.uid))
+                       );
+      allow delete: if isPrimaryAdmin() && existing().isDemoData == true;
+    }
+
+    match /bill_versions/{versionId} {
+      allow get, list: if isPrimaryAdmin() ||
+                         hasActiveCoAdminGrant('BILL_VERIFICATION', false, false) ||
+                         (isSignedIn() && request.auth.uid in resource.data.memberUids);
+      allow create: if isSignedIn() &&
+                       isValidId(versionId) &&
+                       isValidTimestamp(incoming().createdAt) &&
+                       (isPrimaryAdmin() || (incoming().actorUid == request.auth.uid && request.auth.uid in incoming().memberUids));
+      allow update: if false;
+      allow delete: if isPrimaryAdmin() && existing().isDemoData == true;
+    }
+
+    match /expense_records/{expenseId} {
+      allow get, list: if isPrimaryAdmin() ||
+                         hasActiveCoAdminGrant('EXPENSES', false, false) ||
+                         (isSignedIn() && request.auth.uid in resource.data.memberUids);
+      allow create: if isSignedIn() && isValidId(expenseId) &&
+                       (isPrimaryAdmin() || (incoming().submittedByUid == request.auth.uid && request.auth.uid in incoming().memberUids));
+      allow update: if isSignedIn() && isValidId(expenseId) &&
+                       (isPrimaryAdmin() || hasActiveCoAdminGrant('EXPENSES', true, false) || existing().ownerId == request.auth.uid || existing().submittedByUid == request.auth.uid);
+      allow delete: if isPrimaryAdmin() || (isSignedIn() && existing().ownerId == request.auth.uid);
+    }
+
+    match /financial_audit_logs/{logId} {
+      allow get, list: if isPrimaryAdmin() ||
+                         hasActiveCoAdminGrant('RUPEE_TRAIL', false, false) ||
+                         (isSignedIn() && request.auth.uid in resource.data.memberUids);
+      allow create: if isSignedIn() &&
+                       isValidId(logId) &&
+                       incoming().actorUid == request.auth.uid &&
+                       isValidTimestamp(incoming().createdAt);
+      allow update: if false;
+      allow delete: if isPrimaryAdmin() && existing().isDemoData == true;
+    }
+
+    // --- 4. CAMPS & SUBCOLLECTIONS ---
+    match /camps/{campId} {
+      allow get: if isPrimaryAdmin() ||
+                    hasAnyActiveCoAdminGrant() ||
+                    (isSignedIn() && isValidId(campId) && request.auth.uid in existing().memberUids);
+      allow list: if isPrimaryAdmin() ||
+                     hasAnyActiveCoAdminGrant() ||
+                     (isSignedIn() && request.auth.uid in resource.data.memberUids);
+
+      allow create: if isSignedIn() &&
+                       isValidId(campId) &&
+                       incoming().ownerId == request.auth.uid &&
+                       incoming().keys().hasAll(['ownerId', 'memberUids', 'name', 'startDateMillis', 'endDateMillis', 'participantCount', 'approvedBudget', 'status', 'approvalLimit', 'requireIndependentApproval', 'isDemoData', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['ownerId', 'memberUids', 'name', 'institution', 'location', 'startDateMillis', 'endDateMillis', 'participantCount', 'coordinatorName', 'financeLeaderName', 'approvedBudget', 'status', 'approvalLimit', 'requireIndependentApproval', 'isDemoData', 'incomeCategories', 'expenseCategories', 'treasurerDeclaration', 'auditorRemarks', 'createdAt', 'updatedAt']) &&
+                       isValidTimestamp(incoming().createdAt) &&
+                       isValidTimestamp(incoming().updatedAt) &&
+                       isValidCamp(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(campId) &&
+                       isValidCamp(incoming()) &&
+                       incoming().ownerId == existing().ownerId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidTimestamp(incoming().updatedAt) && (
+                         isPrimaryAdmin() ||
+                         (existing().ownerId == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'name', 'institution', 'location', 'startDateMillis', 'endDateMillis', 'participantCount', 'coordinatorName', 'financeLeaderName', 'approvedBudget', 'status', 'approvalLimit', 'requireIndependentApproval', 'incomeCategories', 'expenseCategories', 'treasurerDeclaration', 'auditorRemarks', 'updatedAt'])) ||
+                         (isCampRole(campId, ['SYSTEM_ADMIN']) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'name', 'institution', 'location', 'startDateMillis', 'endDateMillis', 'participantCount', 'coordinatorName', 'financeLeaderName', 'approvedBudget', 'status', 'approvalLimit', 'requireIndependentApproval', 'incomeCategories', 'expenseCategories', 'treasurerDeclaration', 'auditorRemarks', 'updatedAt'])) ||
+                         (isCampRole(campId, ['TREASURER']) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['approvedBudget', 'incomeCategories', 'expenseCategories', 'treasurerDeclaration', 'updatedAt'])) ||
+                         (isCampRole(campId, ['AUDITOR']) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['auditorRemarks', 'updatedAt']))
+                       );
+
+      allow delete: if isSignedIn() && isValidId(campId) && (isPrimaryAdmin() || existing().ownerId == request.auth.uid);
+
+      // --- 4A. MEMBERS ---
+      match /members/{memberId} {
+        allow get: if isPrimaryAdmin() || (isSignedIn() && isValidId(campId) && isValidId(memberId) && request.auth.uid in existing().memberUids);
+        allow list: if isPrimaryAdmin() || (isSignedIn() && request.auth.uid in resource.data.memberUids);
+
+        allow create: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(memberId) &&
+                         incoming().campId == campId &&
+                         campExists(campId) &&
+                         incoming().ownerId == campOwnerId(campId) &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().keys().hasAll(['campId', 'ownerId', 'memberUids', 'displayName', 'role', 'isActive', 'isDemoData', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['campId', 'ownerId', 'memberUids', 'memberUid', 'displayName', 'email', 'role', 'assignedCommitteeIds', 'isActive', 'isDemoData', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         isValidMember(incoming()) &&
+                         (isPrimaryAdmin() || isCampOwner(campId) || isCampRole(campId, ['SYSTEM_ADMIN']));
+
+        allow update: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(memberId) &&
+                         isValidMember(incoming()) &&
+                         incoming().campId == existing().campId &&
+                         incoming().ownerId == existing().ownerId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         (isPrimaryAdmin() || existing().ownerId == request.auth.uid || isCampRole(campId, ['SYSTEM_ADMIN'])) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['memberUid', 'memberUids', 'displayName', 'email', 'role', 'assignedCommitteeIds', 'isActive', 'updatedAt']);
+
+        allow delete: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(memberId) &&
+                         (isPrimaryAdmin() || existing().ownerId == request.auth.uid || isCampRole(campId, ['SYSTEM_ADMIN']));
+      }
+
+      // --- 4B. COMMITTEES ---
+      match /committees/{committeeId} {
+        allow get: if isPrimaryAdmin() || hasActiveCoAdminGrant('COMMITTEES', false, false) || (isSignedIn() && isValidId(campId) && isValidId(committeeId) && request.auth.uid in existing().memberUids);
+        allow list: if isPrimaryAdmin() || hasActiveCoAdminGrant('COMMITTEES', false, false) || (isSignedIn() && request.auth.uid in resource.data.memberUids);
+
+        allow create: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(committeeId) &&
+                         incoming().campId == campId &&
+                         campExists(campId) &&
+                         incoming().ownerId == campOwnerId(campId) &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().keys().hasAll(['campId', 'ownerId', 'memberUids', 'name', 'allocatedBudget', 'isDefault', 'isDemoData', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['campId', 'ownerId', 'memberUids', 'name', 'leaderName', 'leaderEmail', 'allocatedBudget', 'colorHex', 'description', 'isDefault', 'isDemoData', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         isValidCommittee(incoming()) &&
+                         (isPrimaryAdmin() || hasActiveCoAdminGrant('COMMITTEES', true, false) || isCampOwner(campId) || isCampRole(campId, ['SYSTEM_ADMIN', 'TREASURER']));
+
+        allow update: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(committeeId) &&
+                         isValidCommittee(incoming()) &&
+                         incoming().campId == existing().campId &&
+                         incoming().ownerId == existing().ownerId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         (isPrimaryAdmin() || hasActiveCoAdminGrant('COMMITTEES', true, false) || existing().ownerId == request.auth.uid || isCampRole(campId, ['SYSTEM_ADMIN', 'TREASURER'])) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'name', 'leaderName', 'leaderEmail', 'allocatedBudget', 'colorHex', 'description', 'isDefault', 'updatedAt']);
+
+        allow delete: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(committeeId) &&
+                         (isPrimaryAdmin() || existing().ownerId == request.auth.uid || isCampRole(campId, ['SYSTEM_ADMIN', 'TREASURER']));
+      }
+
+      // --- 4C. INCOMES ---
+      match /incomes/{incomeId} {
+        allow get: if isPrimaryAdmin() || hasActiveCoAdminGrant('INCOME', false, false) || (isSignedIn() && isValidId(campId) && isValidId(incomeId) && request.auth.uid in existing().memberUids);
+        allow list: if isPrimaryAdmin() || hasActiveCoAdminGrant('INCOME', false, false) || (isSignedIn() && request.auth.uid in resource.data.memberUids);
+
+        allow create: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(incomeId) &&
+                         incoming().campId == campId &&
+                         campExists(campId) &&
+                         incoming().ownerId == campOwnerId(campId) &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().recordedByUid == request.auth.uid &&
+                         incoming().keys().hasAll(['campId', 'ownerId', 'memberUids', 'transactionCode', 'dateMillis', 'category', 'source', 'promisedAmount', 'receivedAmount', 'paymentMethod', 'paymentStatus', 'recordedByUid', 'recordedByName', 'isDemoData', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['campId', 'ownerId', 'memberUids', 'transactionCode', 'dateMillis', 'category', 'source', 'contributorName', 'contributorGroup', 'promisedAmount', 'receivedAmount', 'paymentMethod', 'referenceNumber', 'notes', 'evidenceUri', 'evidenceBase64', 'paymentStatus', 'recordedByUid', 'recordedByName', 'isDemoData', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         isValidIncome(incoming()) &&
+                         (isPrimaryAdmin() || hasActiveCoAdminGrant('INCOME', true, false) || isCampOwner(campId) || isCampRole(campId, ['SYSTEM_ADMIN', 'TREASURER']));
+
+        allow update: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(incomeId) &&
+                         isValidIncome(incoming()) &&
+                         incoming().campId == existing().campId &&
+                         incoming().ownerId == existing().ownerId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         (isPrimaryAdmin() || hasActiveCoAdminGrant('INCOME', true, false) || existing().ownerId == request.auth.uid || isCampRole(campId, ['SYSTEM_ADMIN', 'TREASURER'])) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'transactionCode', 'dateMillis', 'category', 'source', 'contributorName', 'contributorGroup', 'promisedAmount', 'receivedAmount', 'paymentMethod', 'referenceNumber', 'notes', 'evidenceUri', 'evidenceBase64', 'paymentStatus', 'updatedAt']);
+
+        allow delete: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(incomeId) &&
+                         (isPrimaryAdmin() || existing().ownerId == request.auth.uid || isCampRole(campId, ['SYSTEM_ADMIN', 'TREASURER']));
+      }
+
+      // --- 4D. EXPENSES ---
+      match /expenses/{expenseId} {
+        allow get: if isPrimaryAdmin() || hasActiveCoAdminGrant('EXPENSES', false, false) || (isSignedIn() && isValidId(campId) && isValidId(expenseId) && request.auth.uid in existing().memberUids);
+        allow list: if isPrimaryAdmin() || hasActiveCoAdminGrant('EXPENSES', false, false) || (isSignedIn() && request.auth.uid in resource.data.memberUids);
+
+        allow create: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(expenseId) &&
+                         incoming().campId == campId &&
+                         campExists(campId) &&
+                         incoming().ownerId == campOwnerId(campId) &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().submittedByUid == request.auth.uid &&
+                         incoming().keys().hasAll(['campId', 'ownerId', 'memberUids', 'expenseCode', 'dateMillis', 'committeeId', 'committeeName', 'category', 'description', 'vendorName', 'amount', 'paidAmount', 'paymentMethod', 'paymentStatus', 'receiptVerified', 'submittedByUid', 'submittedByName', 'isDemoData', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['campId', 'ownerId', 'memberUids', 'expenseCode', 'dateMillis', 'committeeId', 'committeeName', 'category', 'description', 'vendorName', 'amount', 'paidAmount', 'paymentMethod', 'paymentStatus', 'receiptUri', 'receiptThumbnailBase64', 'receiptVerified', 'receiptVerifiedBy', 'submittedByUid', 'submittedByName', 'approvedByUid', 'approvedByName', 'paidByName', 'paymentReference', 'remarks', 'sourceIncomeCode', 'isDemoData', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         isValidExpense(incoming()) && (
+                           isPrimaryAdmin() ||
+                           hasActiveCoAdminGrant('EXPENSES', true, false) ||
+                           isCampOwner(campId) ||
+                           isCampRole(campId, ['SYSTEM_ADMIN', 'TREASURER']) ||
+                           (isCampRole(campId, ['COMMITTEE_LEADER']) &&
+                            incoming().paymentStatus in ['DRAFT', 'SUBMITTED', 'PENDING_APPROVAL'])
+                         );
+
+        allow update: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(expenseId) &&
+                         isValidExpense(incoming()) &&
+                         incoming().campId == existing().campId &&
+                         incoming().ownerId == existing().ownerId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         canUpdateExpense(campId);
+
+        allow delete: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(expenseId) && (
+                           isPrimaryAdmin() ||
+                           existing().ownerId == request.auth.uid ||
+                           isCampRole(campId, ['SYSTEM_ADMIN', 'TREASURER']) ||
+                           (existing().submittedByUid == request.auth.uid && existing().paymentStatus == 'DRAFT')
+                         );
+      }
+
+      // --- 4E. BUDGET TRANSFERS ---
+      match /budget_transfers/{transferId} {
+        allow get: if isPrimaryAdmin() || hasActiveCoAdminGrant('COMMITTEES', false, false) || (isSignedIn() && isValidId(campId) && isValidId(transferId) && request.auth.uid in existing().memberUids);
+        allow list: if isPrimaryAdmin() || hasActiveCoAdminGrant('COMMITTEES', false, false) || (isSignedIn() && request.auth.uid in resource.data.memberUids);
+
+        allow create: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(transferId) &&
+                         incoming().campId == campId &&
+                         campExists(campId) &&
+                         incoming().ownerId == campOwnerId(campId) &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().requestedByUid == request.auth.uid &&
+                         incoming().keys().hasAll(['campId', 'ownerId', 'memberUids', 'fromCommitteeId', 'fromCommitteeName', 'toCommitteeId', 'toCommitteeName', 'amount', 'reason', 'status', 'requestedByUid', 'requestedByName', 'isDemoData', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['campId', 'ownerId', 'memberUids', 'fromCommitteeId', 'fromCommitteeName', 'toCommitteeId', 'toCommitteeName', 'amount', 'reason', 'status', 'requestedByUid', 'requestedByName', 'approvedByUid', 'approvedByName', 'isDemoData', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         isValidBudgetTransfer(incoming()) &&
+                         (isPrimaryAdmin() || isCampOwner(campId) || isCampRole(campId, ['SYSTEM_ADMIN', 'TREASURER']));
+
+        allow update: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(transferId) &&
+                         isValidBudgetTransfer(incoming()) &&
+                         incoming().campId == existing().campId &&
+                         incoming().ownerId == existing().ownerId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         (isPrimaryAdmin() || existing().ownerId == request.auth.uid || isCampRole(campId, ['SYSTEM_ADMIN', 'TREASURER'])) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'approvedByUid', 'approvedByName', 'updatedAt']);
+
+        allow delete: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(transferId) &&
+                         (isPrimaryAdmin() || existing().ownerId == request.auth.uid || isCampRole(campId, ['SYSTEM_ADMIN']));
+      }
+
+      // --- 4F. IMMUTABLE AUDIT LOGS ---
+      match /audit_logs/{logId} {
+        allow get: if isPrimaryAdmin() || hasActiveCoAdminGrant('RUPEE_TRAIL', false, false) || (isSignedIn() && isValidId(campId) && isValidId(logId) && request.auth.uid in existing().memberUids);
+        allow list: if isPrimaryAdmin() || hasActiveCoAdminGrant('RUPEE_TRAIL', false, false) || (isSignedIn() && request.auth.uid in resource.data.memberUids);
+
+        allow create: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(logId) &&
+                         incoming().campId == campId &&
+                         campExists(campId) &&
+                         incoming().ownerId == campOwnerId(campId) &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().actorUid == request.auth.uid &&
+                         incoming().keys().hasAll(['campId', 'ownerId', 'memberUids', 'entityType', 'entityId', 'action', 'summary', 'actorUid', 'actorName', 'actorRole', 'isDemoData', 'createdAt']) &&
+                         incoming().keys().hasOnly(['campId', 'ownerId', 'memberUids', 'entityType', 'entityId', 'entityCode', 'action', 'summary', 'previousValues', 'newValues', 'actorUid', 'actorName', 'actorRole', 'isDemoData', 'createdAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidAuditLog(incoming()) &&
+                         (isPrimaryAdmin() || hasActiveCoAdminGrant('EXPENSES', true, false) || isCampOwner(campId) || isCampRole(campId, ['SYSTEM_ADMIN', 'TREASURER', 'COMMITTEE_LEADER', 'AUDITOR']));
+
+        allow update: if false;
+        allow delete: if isSignedIn() &&
+                         isValidId(campId) &&
+                         isValidId(logId) &&
+                         (isPrimaryAdmin() || existing().ownerId == request.auth.uid) &&
+                         existing().isDemoData == true;
+      }
+    }
+  }
+}
